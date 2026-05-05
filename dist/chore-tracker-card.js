@@ -1,21 +1,32 @@
 /**
  * Chore Tracker Card — Home Assistant Lovelace Custom Card
- * Fetches state from the Chore Tracker add-on API (cross-device sync).
- * Records completions as the currently logged-in HA user automatically.
  *
- * Config options:
- *   title: "Chores"   — card heading (optional)
+ * Stores all chore data in a single HA input_text helper as JSON.
+ * No add-on, no API calls, no auth issues — uses hass.callService()
+ * which works natively in any Lovelace card.
+ *
+ * Setup:
+ *   1. Create a Helper: Settings → Devices & Services → Helpers → + Add → Text
+ *      Name it "Chore Tracker Data", entity ID will be input_text.chore_tracker_data
+ *      Set max length to 255 — then go to configuration.yaml and set it to 10000
+ *      (see README for the configuration.yaml snippet)
+ *   2. Add the card:
+ *        type: custom:chore-tracker-card
+ *        title: Chores
+ *        entity: input_text.chore_tracker_data
  */
 
-const VERSION = "1.5.0";
-// The add-on API is exposed directly on port 8787.
-// We use the same hostname as the HA frontend — works on local network,
-// Nabu Casa remote, and any other HA access method.
+const VERSION = "2.0.0";
 const MS_DAY = 86_400_000;
 
-function getApiBase() {
-  return `${window.location.protocol}//${window.location.hostname}:8787`;
-}
+const DEFAULT_CHORES = [
+  { id: 1, name: "Vacuum living room",  freqDays: 7,  lastDone: null, lastBy: null, history: [] },
+  { id: 2, name: "Take out trash",      freqDays: 3,  lastDone: null, lastBy: null, history: [] },
+  { id: 3, name: "Clean kitchen",       freqDays: 2,  lastDone: null, lastBy: null, history: [] },
+  { id: 4, name: "Wipe bathroom",       freqDays: 7,  lastDone: null, lastBy: null, history: [] },
+  { id: 5, name: "Mop floors",          freqDays: 14, lastDone: null, lastBy: null, history: [] },
+  { id: 6, name: "Change bed sheets",   freqDays: 7,  lastDone: null, lastBy: null, history: [] },
+];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function daysAgo(ts) {
@@ -84,7 +95,7 @@ const STYLES = `
   .chore-row {
     display: flex; align-items: center; gap: 10px; padding: 9px 12px;
     border-radius: 8px; background: var(--secondary-background-color, #f5f5f5);
-    transition: opacity 0.25s; position: relative;
+    transition: opacity 0.25s;
   }
   .chore-row.just-done { opacity: 0.5; }
   .status-bar { width: 3px; height: 36px; border-radius: 2px; flex-shrink: 0; }
@@ -150,20 +161,19 @@ const STYLES = `
     font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit;
   }
   .add-btn:hover { opacity: 0.88; }
-  .status-bar-loading {
-    display: flex; align-items: center; gap: 8px; padding: 12px 0;
-    font-size: 13px; color: var(--secondary-text-color);
-  }
-  .spinner {
-    width: 14px; height: 14px;
-    border: 2px solid var(--divider-color, #ccc);
-    border-top-color: var(--primary-color, #03a9f4);
-    border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
   .error-msg {
     font-size: 12px; color: var(--c-over); padding: 8px 10px;
     background: var(--c-over-bg); border-radius: 6px; margin-bottom: 8px;
+  }
+  .setup-msg {
+    font-size: 13px; color: var(--secondary-text-color);
+    padding: 12px; background: var(--secondary-background-color, #f5f5f5);
+    border-radius: 8px; line-height: 1.6;
+  }
+  .setup-msg code {
+    background: var(--primary-background-color, #fff);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    border: 1px solid var(--divider-color, #e0e0e0);
   }
   .empty { text-align: center; font-size: 13px; color: var(--secondary-text-color); padding: 16px 0; }
 `;
@@ -174,21 +184,15 @@ class ChoreTrackerCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._config = {};
-    this._state = { chores: [] };
+    this._state = null;       // loaded from input_text entity
+    this._hass = null;
     this._currentUser = null;
-    this._loading = true;
-    this._error = null;
     this._refreshTimer = null;
-    this._busy = new Set();
-    this._initialFetchDone = false;
   }
 
   connectedCallback() {
-    // Don't fetch here — hass (and its auth token) isn't set yet.
-    // _fetchState() is triggered from the hass setter on first assignment.
-    this._refreshTimer = setInterval(() => {
-      if (this._hass) this._fetchState();
-    }, 30_000);
+    // Re-render every minute so time labels stay fresh
+    this._refreshTimer = setInterval(() => this._render(), 60_000);
   }
 
   disconnectedCallback() {
@@ -197,15 +201,12 @@ class ChoreTrackerCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    // hass.user is the currently logged-in HA user — always current
     if (!this._currentUser && hass.user?.name) {
       this._currentUser = hass.user.name;
     }
-    // Trigger first fetch once hass (and its token) is available
-    if (!this._initialFetchDone) {
-      this._initialFetchDone = true;
-      this._fetchState();
-    }
+    // State lives in the HA entity — read it on every hass update
+    this._loadFromEntity();
+    this._render();
   }
 
   setConfig(config) {
@@ -215,176 +216,110 @@ class ChoreTrackerCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { title: "Chores" };
+    return { title: "Chores", entity: "input_text.chore_tracker_data" };
   }
 
   getCardSize() {
-    return Math.max(3, Math.ceil(this._state.chores.length / 2) + 3);
+    return Math.max(3, Math.ceil((this._state?.chores?.length || 0) / 2) + 3);
   }
 
-  // ── API ───────────────────────────────────────────────────────────────────────
-  // Calls the add-on REST API directly on port 8787.
-  // No Ingress, no Supervisor auth — just a plain fetch to the local add-on.
-  async _apiFetch(path, options = {}) {
-    const url = `${getApiBase()}${path}`;
-    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-    const resp = await fetch(url, { ...options, headers });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    if (resp.status === 204) return null;
-    return resp.json();
+  // ── State management via input_text entity ────────────────────────────────────
+  _entityId() {
+    return this._config.entity || "input_text.chore_tracker_data";
   }
 
-  async _fetchState() {
+  _loadFromEntity() {
+    if (!this._hass) return;
+    const entity = this._hass.states[this._entityId()];
+    if (!entity) return; // entity not found yet
+
+    const raw = entity.state;
+    if (!raw || raw === "unknown" || raw === "unavailable" || raw.trim() === "") {
+      // First run — initialise with defaults
+      this._state = { chores: DEFAULT_CHORES, nextId: DEFAULT_CHORES.length + 1 };
+      this._persist();
+      return;
+    }
     try {
-      this._state = await this._apiFetch("/api/chores");
-      this._error = null;
-    } catch (e) {
-      this._error = `Could not reach the Chore Tracker add-on. Is it running? ${e.message}`;
-    } finally {
-      this._loading = false;
-      this._render();
+      this._state = JSON.parse(raw);
+    } catch (_) {
+      this._state = { chores: DEFAULT_CHORES, nextId: DEFAULT_CHORES.length + 1 };
     }
   }
 
-  async _markDone(id) {
-    if (this._busy.has(id)) return;
-    this._busy.add(id);
+  _persist() {
+    if (!this._hass || !this._state) return;
+    const json = JSON.stringify(this._state);
+    this._hass.callService("input_text", "set_value", {
+      entity_id: this._entityId(),
+      value: json,
+    });
+  }
+
+  // ── Mutations ─────────────────────────────────────────────────────────────────
+  _markDone(id) {
+    const chore = this._state.chores.find(c => c.id === id);
+    if (!chore) return;
+    chore.history = [...(chore.history || []), { ts: chore.lastDone, by: chore.lastBy }].slice(-20);
+    chore.lastDone = Date.now();
+    chore.lastBy = this._currentUser || "Unknown";
+    this._persist();
     this._render();
-    try {
-      const updated = await this._apiFetch(`/api/chores/${id}/complete`, {
-        method: "POST",
-        body: JSON.stringify({ user: this._currentUser || "Unknown" }),
-      });
-      const idx = this._state.chores.findIndex(c => c.id === id);
-      if (idx !== -1) this._state.chores[idx] = updated;
-      this._error = null;
-    } catch (e) {
-      this._error = `Failed to complete chore: ${e.message}`;
-    } finally {
-      this._busy.delete(id);
-      this._render();
-    }
   }
 
-  async _undo(id) {
-    if (this._busy.has(id)) return;
-    this._busy.add(id);
+  _undo(id) {
+    const chore = this._state.chores.find(c => c.id === id);
+    if (!chore || !chore.history?.length) return;
+    const prev = chore.history.pop();
+    chore.lastDone = prev.ts;
+    chore.lastBy = prev.by;
+    this._persist();
     this._render();
-    try {
-      const updated = await this._apiFetch(`/api/chores/${id}/undo`, { method: "POST" });
-      const idx = this._state.chores.findIndex(c => c.id === id);
-      if (idx !== -1) this._state.chores[idx] = updated;
-      this._error = null;
-    } catch (e) {
-      this._error = `Failed to undo: ${e.message}`;
-    } finally {
-      this._busy.delete(id);
-      this._render();
-    }
   }
 
-  async _addChore(name, freqDays) {
+  _addChore(name, freqDays) {
     if (!name.trim()) return;
-    try {
-      const created = await this._apiFetch("/api/chores", {
-        method: "POST",
-        body: JSON.stringify({ name: name.trim(), freqDays }),
-      });
-      this._state.chores.push(created);
-      this._error = null;
-    } catch (e) {
-      this._error = `Failed to add chore: ${e.message}`;
-    }
+    this._state.chores.push({
+      id: this._state.nextId++,
+      name: name.trim(),
+      freqDays,
+      lastDone: null,
+      lastBy: null,
+      history: [],
+    });
+    this._persist();
     this._render();
   }
 
-  async _deleteChore(id) {
-    try {
-      await this._apiFetch(`/api/chores/${id}`, { method: "DELETE" });
-      this._state.chores = this._state.chores.filter(c => c.id !== id);
-      this._error = null;
-    } catch (e) {
-      this._error = `Failed to delete chore: ${e.message}`;
-    }
+  _deleteChore(id) {
+    this._state.chores = this._state.chores.filter(c => c.id !== id);
+    this._persist();
     this._render();
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
   _render() {
-    const { chores } = this._state;
-    const title = this._config.title || "Chores";
-    const currentUser = this._currentUser;
-    const ORDER = { overdue: 0, due: 1, ok: 2 };
-    const sorted = [...chores].sort((a, b) => ORDER[getStatus(a)] - ORDER[getStatus(b)]);
-
     const root = this.shadowRoot;
-    root.innerHTML = `
-      <style>${STYLES}</style>
-      <ha-card class="card">
-        <div class="card-header">
-          <span class="card-title">${title}</span>
-          ${currentUser
-            ? `<span class="current-user">${currentUser}</span>`
-            : ""}
-        </div>
+    const title = this._config.title || "Chores";
+    const entityId = this._entityId();
+    const entityExists = this._hass && !!this._hass.states[entityId];
 
-        ${this._error ? `<div class="error-msg">${this._error}</div>` : ""}
+    root.innerHTML = `<style>${STYLES}</style><ha-card class="card">
+      <div class="card-header">
+        <span class="card-title">${title}</span>
+        ${this._currentUser ? `<span class="current-user">${this._currentUser}</span>` : ""}
+      </div>
+      ${!entityExists ? `
+        <div class="setup-msg">
+          Entity <code>${entityId}</code> not found.<br><br>
+          Create it: <strong>Settings → Devices &amp; Services → Helpers → + Add → Text</strong><br>
+          Name: <code>Chore Tracker Data</code><br><br>
+          Then add this to <code>configuration.yaml</code> and restart HA:<br>
+          <code>input_text:<br>&nbsp;&nbsp;chore_tracker_data:<br>&nbsp;&nbsp;&nbsp;&nbsp;max: 10000</code>
+        </div>` : this._renderChores()}
+    </ha-card>`;
 
-        ${this._loading
-          ? `<div class="status-bar-loading"><div class="spinner"></div> Loading chores…</div>`
-          : `
-          <div class="legend">
-            <span class="leg"><span class="leg-dot" style="background:var(--c-bar-ok)"></span>On time</span>
-            <span class="leg"><span class="leg-dot" style="background:var(--c-bar-due)"></span>Overdue</span>
-            <span class="leg"><span class="leg-dot" style="background:var(--c-bar-over)"></span>Way overdue</span>
-          </div>
-          <div class="chore-list">
-            ${sorted.length === 0
-              ? '<div class="empty">No chores yet — add one below.</div>'
-              : sorted.map(c => {
-                  const s = getStatus(c);
-                  const barCls  = { ok:"bar-ok", due:"bar-due", overdue:"bar-over" }[s];
-                  const pillCls = { ok:"pill-ok", due:"pill-due", overdue:"pill-over" }[s];
-                  const justDone = c.lastDone && (Date.now() - c.lastDone) < 90_000;
-                  const busy = this._busy.has(c.id);
-                  const byLine = c.lastBy ? ` · ${c.lastBy}` : "";
-                  return `
-                    <div class="chore-row ${justDone ? "just-done" : ""}">
-                      <div class="status-bar ${barCls}"></div>
-                      <div class="chore-info">
-                        <div class="chore-name">${c.name}</div>
-                        <div class="chore-sub">${freqLabel(c.freqDays)}${byLine}</div>
-                      </div>
-                      <span class="status-pill ${pillCls}">${statusText(c)}</span>
-                      <div class="row-actions">
-                        <button class="del-btn" data-del="${c.id}" title="Delete chore">✕</button>
-                        ${c.history && c.history.length > 0
-                          ? `<button class="undo-btn" data-undo="${c.id}" ${busy ? "disabled" : ""}>↩</button>`
-                          : ""}
-                        <button class="check-btn ${justDone ? "done" : ""}"
-                                data-check="${c.id}"
-                                title="Mark done"
-                                ${busy ? "disabled" : ""}></button>
-                      </div>
-                    </div>`;
-                }).join("")}
-          </div>
-          <div class="divider"></div>
-          <div class="add-label">Add chore</div>
-          <div class="add-section">
-            <input id="newName" type="text" placeholder="Chore name" maxlength="60" />
-            <select id="newFreq">
-              <option value="1">Daily</option>
-              <option value="2">Every 2 days</option>
-              <option value="3">Every 3 days</option>
-              <option value="7" selected>Weekly</option>
-              <option value="14">Bi-weekly</option>
-              <option value="30">Monthly</option>
-            </select>
-            <button class="add-btn" id="addBtn">+ Add</button>
-          </div>`}
-      </ha-card>
-    `;
+    if (!entityExists) return;
 
     root.querySelectorAll("[data-check]").forEach(btn =>
       btn.addEventListener("click", () => this._markDone(Number(btn.dataset.check)))
@@ -394,9 +329,8 @@ class ChoreTrackerCard extends HTMLElement {
     );
     root.querySelectorAll("[data-del]").forEach(btn =>
       btn.addEventListener("click", () => {
-        if (confirm(`Delete "${chores.find(c => c.id === Number(btn.dataset.del))?.name}"?`)) {
-          this._deleteChore(Number(btn.dataset.del));
-        }
+        const chore = this._state.chores.find(c => c.id === Number(btn.dataset.del));
+        if (chore && confirm(`Delete "${chore.name}"?`)) this._deleteChore(chore.id);
       })
     );
     const addBtn = root.getElementById("addBtn");
@@ -411,6 +345,58 @@ class ChoreTrackerCard extends HTMLElement {
       nameInput.addEventListener("keydown", e => { if (e.key === "Enter") doAdd(); });
     }
   }
+
+  _renderChores() {
+    if (!this._state) return `<div class="empty">Loading…</div>`;
+    const chores = this._state.chores || [];
+    const ORDER = { overdue: 0, due: 1, ok: 2 };
+    const sorted = [...chores].sort((a, b) => ORDER[getStatus(a)] - ORDER[getStatus(b)]);
+    return `
+      <div class="legend">
+        <span class="leg"><span class="leg-dot" style="background:var(--c-bar-ok)"></span>On time</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--c-bar-due)"></span>Overdue</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--c-bar-over)"></span>Way overdue</span>
+      </div>
+      <div class="chore-list">
+        ${sorted.length === 0 ? '<div class="empty">No chores yet — add one below.</div>' : sorted.map(c => {
+          const s = getStatus(c);
+          const barCls  = { ok:"bar-ok", due:"bar-due", overdue:"bar-over" }[s];
+          const pillCls = { ok:"pill-ok", due:"pill-due", overdue:"pill-over" }[s];
+          const justDone = c.lastDone && (Date.now() - c.lastDone) < 90_000;
+          const byLine = c.lastBy ? ` · ${c.lastBy}` : "";
+          return `
+            <div class="chore-row ${justDone ? "just-done" : ""}">
+              <div class="status-bar ${barCls}"></div>
+              <div class="chore-info">
+                <div class="chore-name">${c.name}</div>
+                <div class="chore-sub">${freqLabel(c.freqDays)}${byLine}</div>
+              </div>
+              <span class="status-pill ${pillCls}">${statusText(c)}</span>
+              <div class="row-actions">
+                <button class="del-btn" data-del="${c.id}" title="Delete chore">✕</button>
+                ${c.history?.length > 0
+                  ? `<button class="undo-btn" data-undo="${c.id}">↩</button>` : ""}
+                <button class="check-btn ${justDone ? "done" : ""}"
+                        data-check="${c.id}" title="Mark done"></button>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+      <div class="divider"></div>
+      <div class="add-label">Add chore</div>
+      <div class="add-section">
+        <input id="newName" type="text" placeholder="Chore name" maxlength="60" />
+        <select id="newFreq">
+          <option value="1">Daily</option>
+          <option value="2">Every 2 days</option>
+          <option value="3">Every 3 days</option>
+          <option value="7" selected>Weekly</option>
+          <option value="14">Bi-weekly</option>
+          <option value="30">Monthly</option>
+        </select>
+        <button class="add-btn" id="addBtn">+ Add</button>
+      </div>`;
+  }
 }
 
 customElements.define("chore-tracker-card", ChoreTrackerCard);
@@ -419,7 +405,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "chore-tracker-card",
   name: "Chore Tracker",
-  description: "Track household chores with color-coded urgency. Completions recorded as the logged-in HA user.",
+  description: "Track household chores. Stores data in a HA input_text helper — no add-on required.",
   preview: true,
   documentationURL: "https://github.com/somethingp/chore-tracker-card",
 });
