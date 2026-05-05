@@ -569,7 +569,7 @@ window.customCards.push({
   name: "Chore Tracker",
   description: "Track household chores with color-coded urgency, per-user check-offs, and undo. Requires the Chore Tracker add-on.",
   preview: true,
-  documentationURL: "https://github.com/YOUR_USERNAME/chore-tracker",
+  documentationURL: "https://github.com/somethingp/chore-tracker",
 });
 
 console.info(`%c CHORE-TRACKER-CARD %c v${VERSION} `, "color:#fff;background:#639922;padding:2px 4px;border-radius:3px 0 0 3px", "color:#639922;background:#eaf3de;padding:2px 4px;border-radius:0 3px 3px 0");

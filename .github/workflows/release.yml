@@ -27,4 +27,4 @@ jobs:
           body: |
             ## Installation
             Install via HACS (Frontend) or copy `chore-tracker-card.js` to `/config/www/`.
-            Requires the [Chore Tracker Add-on](https://github.com/YOUR_USERNAME/chore-tracker-addon).
+            Requires the [Chore Tracker Add-on](https://github.com/somethingp/chore-tracker-addon).
