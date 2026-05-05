@@ -7,7 +7,7 @@
  *   title: "Chores"   — card heading (optional)
  */
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const ADDON_SLUG = "chore_tracker";
 const MS_DAY = 86_400_000;
 
@@ -218,20 +218,19 @@ class ChoreTrackerCard extends HTMLElement {
   }
 
   // ── API ───────────────────────────────────────────────────────────────────────
-  // The Ingress URL is a dynamic token, not the static slug.
-  // We fetch it from the Supervisor API once and cache it.
+  // The Ingress URL is a dynamic token fetched from the Supervisor once and cached.
+  // We use hass.callApi() which correctly routes through the HA proxy with the
+  // right auth — a raw Bearer token doesn't work for Supervisor API calls.
   async _getIngressUrl() {
     if (this._ingressUrl) return this._ingressUrl;
-    const token = this._hass.auth.data.access_token;
-    const resp = await fetch(`/api/hassio/addons/${ADDON_SLUG}/info`, {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    if (!resp.ok) throw new Error(`Could not get add-on info (${resp.status}). Is the Chore Tracker add-on installed and running?`);
-    const data = await resp.json();
-    const ingressUrl = data?.data?.ingress_url;
+    let data;
+    try {
+      data = await this._hass.callApi("GET", `hassio/addons/${ADDON_SLUG}/info`);
+    } catch (e) {
+      throw new Error(`Could not get add-on info. Is the Chore Tracker add-on installed and running? (${e.message})`);
+    }
+    const ingressUrl = data?.ingress_url;
     if (!ingressUrl) throw new Error("Add-on has no ingress_url — is Ingress enabled in the add-on config?");
-    // ingress_url looks like /api/hassio_ingress/TOKEN/
-    // Strip trailing slash so we can append paths cleanly
     this._ingressUrl = ingressUrl.replace(/\/$/, "");
     return this._ingressUrl;
   }
