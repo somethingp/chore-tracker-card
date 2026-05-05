@@ -1,0 +1,9 @@
+{
+  "name": "Chore Tracker Card",
+  "description": "Lovelace card for the Chore Tracker add-on. Color-coded urgency, per-user check-offs, and undo. Requires the Chore Tracker add-on.",
+  "documentation": "https://github.com/YOUR_USERNAME/chore-tracker-card",
+  "homeassistant": "2023.1.0",
+  "version": "1.0.0",
+  "filename": "dist/chore-tracker-card.js",
+  "type": "lovelace"
+}

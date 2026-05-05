@@ -1,0 +1,30 @@
+name: Release Card
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update version in info.json
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" info.json
+          echo "Version set to $VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/chore-tracker-card.js
+          generate_release_notes: true
+          body: |
+            ## Installation
+            Install via HACS (Frontend) or copy `chore-tracker-card.js` to `/config/www/`.
+            Requires the [Chore Tracker Add-on](https://github.com/YOUR_USERNAME/chore-tracker-addon).
