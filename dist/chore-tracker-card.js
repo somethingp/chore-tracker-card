@@ -7,11 +7,8 @@
  *   title: "Chores"   — card heading (optional)
  */
 
-const VERSION = "1.3.0";
-// Lovelace cards reach the add-on via the HA Supervisor Ingress proxy.
-// The correct browser-side path is /api/hassio_ingress/<addon_slug>.
-// Do NOT use /api/hassio/ingress — that is the internal Supervisor API, not the browser proxy.
-const INGRESS_BASE = "/api/hassio_ingress/chore_tracker";
+const VERSION = "1.4.0";
+const ADDON_SLUG = "chore_tracker";
 const MS_DAY = 86_400_000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -178,7 +175,7 @@ class ChoreTrackerCard extends HTMLElement {
     this._refreshTimer = null;
     this._busy = new Set();
     this._initialFetchDone = false;
-    this._ingressSessionReady = false;
+    this._ingressUrl = null;  // fetched dynamically from Supervisor on first use
   }
 
   connectedCallback() {
@@ -221,31 +218,32 @@ class ChoreTrackerCard extends HTMLElement {
   }
 
   // ── API ───────────────────────────────────────────────────────────────────────
-  // For Ingress, HA uses a session cookie rather than a Bearer token.
-  // We establish the Ingress session once by hitting the session endpoint,
-  // which sets the cookie that all subsequent Ingress requests use.
-  async _ensureIngressSession() {
-    if (this._ingressSessionReady) return;
-    try {
-      await fetch("/api/hassio/ingress/session", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this._hass.auth.data.access_token}`,
-        },
-      });
-      this._ingressSessionReady = true;
-    } catch (_) {
-      // Session setup failed — requests will still attempt but may get 401
-    }
+  // The Ingress URL is a dynamic token, not the static slug.
+  // We fetch it from the Supervisor API once and cache it.
+  async _getIngressUrl() {
+    if (this._ingressUrl) return this._ingressUrl;
+    const token = this._hass.auth.data.access_token;
+    const resp = await fetch(`/api/hassio/addons/${ADDON_SLUG}/info`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error(`Could not get add-on info (${resp.status}). Is the Chore Tracker add-on installed and running?`);
+    const data = await resp.json();
+    const ingressUrl = data?.data?.ingress_url;
+    if (!ingressUrl) throw new Error("Add-on has no ingress_url — is Ingress enabled in the add-on config?");
+    // ingress_url looks like /api/hassio_ingress/TOKEN/
+    // Strip trailing slash so we can append paths cleanly
+    this._ingressUrl = ingressUrl.replace(/\/$/, "");
+    return this._ingressUrl;
   }
 
   async _apiFetch(path, options = {}) {
-    await this._ensureIngressSession();
+    const base = await this._getIngressUrl();
     const headers = {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${this._hass.auth.data.access_token}`,
       ...(options.headers || {}),
     };
-    const resp = await fetch(`${INGRESS_BASE}${path}`, { ...options, headers, credentials: "same-origin" });
+    const resp = await fetch(`${base}${path}`, { ...options, headers, credentials: "same-origin" });
     if (!resp.ok) throw new Error(`API ${resp.status}: ${await resp.text().catch(() => "")}`);
     if (resp.status === 204) return null;
     return resp.json();
