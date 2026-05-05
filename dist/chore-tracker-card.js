@@ -7,9 +7,15 @@
  *   title: "Chores"   — card heading (optional)
  */
 
-const VERSION = "1.4.1";
-const ADDON_SLUG = "chore_tracker";
+const VERSION = "1.5.0";
+// The add-on API is exposed directly on port 8787.
+// We use the same hostname as the HA frontend — works on local network,
+// Nabu Casa remote, and any other HA access method.
 const MS_DAY = 86_400_000;
+
+function getApiBase() {
+  return `${window.location.protocol}//${window.location.hostname}:8787`;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function daysAgo(ts) {
@@ -175,7 +181,6 @@ class ChoreTrackerCard extends HTMLElement {
     this._refreshTimer = null;
     this._busy = new Set();
     this._initialFetchDone = false;
-    this._ingressUrl = null;  // fetched dynamically from Supervisor on first use
   }
 
   connectedCallback() {
@@ -218,32 +223,13 @@ class ChoreTrackerCard extends HTMLElement {
   }
 
   // ── API ───────────────────────────────────────────────────────────────────────
-  // The Ingress URL is a dynamic token fetched from the Supervisor once and cached.
-  // We use hass.callApi() which correctly routes through the HA proxy with the
-  // right auth — a raw Bearer token doesn't work for Supervisor API calls.
-  async _getIngressUrl() {
-    if (this._ingressUrl) return this._ingressUrl;
-    let data;
-    try {
-      data = await this._hass.callApi("GET", `hassio/addons/${ADDON_SLUG}/info`);
-    } catch (e) {
-      throw new Error(`Could not get add-on info. Is the Chore Tracker add-on installed and running? (${e.message})`);
-    }
-    const ingressUrl = data?.ingress_url;
-    if (!ingressUrl) throw new Error("Add-on has no ingress_url — is Ingress enabled in the add-on config?");
-    this._ingressUrl = ingressUrl.replace(/\/$/, "");
-    return this._ingressUrl;
-  }
-
+  // Calls the add-on REST API directly on port 8787.
+  // No Ingress, no Supervisor auth — just a plain fetch to the local add-on.
   async _apiFetch(path, options = {}) {
-    const base = await this._getIngressUrl();
-    const headers = {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${this._hass.auth.data.access_token}`,
-      ...(options.headers || {}),
-    };
-    const resp = await fetch(`${base}${path}`, { ...options, headers, credentials: "same-origin" });
-    if (!resp.ok) throw new Error(`API ${resp.status}: ${await resp.text().catch(() => "")}`);
+    const url = `${getApiBase()}${path}`;
+    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    const resp = await fetch(url, { ...options, headers });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     if (resp.status === 204) return null;
     return resp.json();
   }
