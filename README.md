@@ -2,7 +2,7 @@
 
 Lovelace custom card for [Home Assistant](https://www.home-assistant.io/). Displays household chores color-coded by urgency, with per-user check-offs and undo.
 
-**Requires the [Chore Tracker Add-on](https://github.com/YOUR_USERNAME/chore-tracker-addon) to be installed and running.**
+**Requires the [Chore Tracker Add-on](https://github.com/somethingp/chore-tracker-addon) to be installed and running.**
 
 ## Features
 
@@ -17,7 +17,7 @@ Lovelace custom card for [Home Assistant](https://www.home-assistant.io/). Displ
 
 ### Via HACS (recommended)
 
-1. Install the **[Chore Tracker Add-on](https://github.com/YOUR_USERNAME/chore-tracker-addon)** first
+1. Install the **[Chore Tracker Add-on](https://github.com/somethingp/chore-tracker-addon)** first
 2. In HACS → **Frontend** → **+ Explore & Download Repositories**
 3. Search for **Chore Tracker Card** and download it
 4. Hard-refresh your browser (Ctrl+Shift+R / Cmd+Shift+R)
